@@ -18,7 +18,9 @@ GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]  # token (Access Policy)
 
 
 def fetch_ecowitt_realtime() -> dict:
-    # Ecowitt API v3: real_time
+    """
+    Ecowitt API v3: real_time
+    """
     url = "https://api.ecowitt.net/api/v3/device/real_time"
     params = {
         "application_key": ECOWITT_APP_KEY,
@@ -42,9 +44,9 @@ def _pick(data: dict, *names):
     """
     Ecowitt a veces devuelve:
       key: {"value":"12.3","unit":"C"}
-    o directamente:
+    o:
       key: "12.3"
-    Aquí probamos varias claves posibles y devolvemos el primer valor encontrado.
+    Probamos varias claves y devolvemos el primer valor existente.
     """
     for name in names:
         if name not in data:
@@ -59,10 +61,14 @@ def _pick(data: dict, *names):
 
 def main():
     # Exporter: Prometheus remote_write (Grafana Cloud)
+    # OJO: esta librería espera basic_auth como dict, no username/password.
     exporter = PrometheusRemoteWriteMetricsExporter(
         endpoint=GRAFANA_RW_URL,
-        username=GRAFANA_RW_USERNAME,
-        password=GRAFANA_RW_PASSWORD,
+        basic_auth={
+            "username": GRAFANA_RW_USERNAME,
+            "password": GRAFANA_RW_PASSWORD,
+        },
+        headers={},  # puedes dejarlo vacío
     )
 
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
@@ -111,3 +117,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
