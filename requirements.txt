@@ -1,0 +1,4 @@
+requests
+opentelemetry-sdk
+opentelemetry-exporter-prometheus-remote-write
+
