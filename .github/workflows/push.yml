@@ -1,0 +1,32 @@
+name: ecowitt-to-grafana
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"   # cada 5 minutos (UTC)
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch Ecowitt data and push to Grafana
+        env:
+          ECOWITT_APP_KEY: ${{ secrets.ECOWITT_APP_KEY }}
+          ECOWITT_API_KEY: ${{ secrets.ECOWITT_API_KEY }}
+          ECOWITT_MAC: ${{ secrets.ECOWITT_MAC }}
+          GRAFANA_RW_URL: ${{ secrets.GRAFANA_RW_URL }}
+          GRAFANA_RW_USERNAME: ${{ secrets.GRAFANA_RW_USERNAME }}
+          GRAFANA_RW_PASSWORD: ${{ secrets.GRAFANA_RW_PASSWORD }}
+        run: python ecowitt_to_grafana.py
