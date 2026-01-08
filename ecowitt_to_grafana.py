@@ -7,20 +7,16 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.prometheus_remote_write import PrometheusRemoteWriteMetricsExporter
 
 
-# --- ENV (GitHub Secrets) ---
 ECOWITT_APP_KEY = os.environ["ECOWITT_APP_KEY"]
 ECOWITT_API_KEY = os.environ["ECOWITT_API_KEY"]
 ECOWITT_MAC = os.environ["ECOWITT_MAC"]
 
-GRAFANA_RW_URL = os.environ["GRAFANA_RW_URL"]            # https://.../api/prom/push
-GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]  # normalmente tu "slug" (ej: fmp14352)
-GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]  # token (Access Policy)
+GRAFANA_RW_URL = os.environ["GRAFANA_RW_URL"]
+GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]
+GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]
 
 
 def fetch_ecowitt_realtime() -> dict:
-    """
-    Ecowitt API v3: real_time
-    """
     url = "https://api.ecowitt.net/api/v3/device/real_time"
     params = {
         "application_key": ECOWITT_APP_KEY,
@@ -41,13 +37,6 @@ def _to_float(v):
 
 
 def _pick(data: dict, *names):
-    """
-    Ecowitt a veces devuelve:
-      key: {"value":"12.3","unit":"C"}
-    o:
-      key: "12.3"
-    Probamos varias claves y devolvemos el primer valor existente.
-    """
     for name in names:
         if name not in data:
             continue
@@ -60,22 +49,20 @@ def _pick(data: dict, *names):
 
 
 def main():
-    # Exporter: Prometheus remote_write (Grafana Cloud)
-    # OJO: esta librería espera basic_auth como dict, no username/password.
+    print("START ecowitt_to_grafana", flush=True)
+    print(f"Remote write URL: {GRAFANA_RW_URL}", flush=True)
+    print(f"Remote write username(first6): {GRAFANA_RW_USERNAME[:6]}", flush=True)
+
     exporter = PrometheusRemoteWriteMetricsExporter(
         endpoint=GRAFANA_RW_URL,
-        basic_auth={
-            "username": GRAFANA_RW_USERNAME,
-            "password": GRAFANA_RW_PASSWORD,
-        },
-        headers={},  # puedes dejarlo vacío
+        basic_auth={"username": GRAFANA_RW_USERNAME, "password": GRAFANA_RW_PASSWORD},
+        headers={},
     )
 
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
     provider = MeterProvider(metric_readers=[reader])
     meter = provider.get_meter("ecowitt")
 
-    # Métricas típicas (gauges)
     g_temp_c = meter.create_gauge("ecowitt_temperature_c", unit="C")
     g_hum_pct = meter.create_gauge("ecowitt_humidity_pct", unit="%")
     g_press_hpa = meter.create_gauge("ecowitt_pressure_hpa", unit="hPa")
@@ -85,17 +72,19 @@ def main():
 
     payload = fetch_ecowitt_realtime()
     data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    print("Ecowitt payload keys:", (list(payload.keys()) if isinstance(payload, dict) else type(payload)), flush=True)
+    print("Ecowitt data keys sample:", (list(data.keys())[:25] if isinstance(data, dict) else type(data)), flush=True)
 
-    # Etiquetas (labels) para filtrar por estación
     labels = {"station_mac": ECOWITT_MAC}
 
-    # Intentamos varias claves porque Ecowitt puede nombrarlas distinto según sensores
-    temp = _to_float(_pick(data, "temp", "outdoor_temperature", "tempin", "temp_out"))
-    hum = _to_float(_pick(data, "humidity", "outdoor_humidity", "humidityin", "humi_out"))
+    temp = _to_float(_pick(data, "temp", "outdoor_temperature", "temp_out", "tempin"))
+    hum = _to_float(_pick(data, "humidity", "outdoor_humidity", "humi_out", "humidityin"))
     press = _to_float(_pick(data, "baromabs", "baromrel", "pressure", "press"))
     wind = _to_float(_pick(data, "windspeed", "wind_speed", "wind"))
     gust = _to_float(_pick(data, "windgust", "gustspeed", "wind_gust"))
     rainrate = _to_float(_pick(data, "rainrate", "rain_rate", "rain_rate_piezo"))
+
+    print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
 
     if temp is not None:
         g_temp_c.set(temp, labels)
@@ -110,9 +99,16 @@ def main():
     if rainrate is not None:
         g_rainrate_mm.set(rainrate, labels)
 
-    # Espera breve para que exporte
-    time.sleep(2)
+    try:
+        provider.force_flush()
+        print("force_flush() OK", flush=True)
+    except Exception as e:
+        print("force_flush() ERROR:", repr(e), flush=True)
+        raise
+
+    time.sleep(10)
     provider.shutdown()
+    print("DONE", flush=True)
 
 
 if __name__ == "__main__":
