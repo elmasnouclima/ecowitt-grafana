@@ -29,4 +29,12 @@ jobs:
           GRAFANA_RW_URL: ${{ secrets.GRAFANA_RW_URL }}
           GRAFANA_RW_USERNAME: ${{ secrets.GRAFANA_RW_USERNAME }}
           GRAFANA_RW_PASSWORD: ${{ secrets.GRAFANA_RW_PASSWORD }}
-        run: python ecowitt_to_grafana.py
+        run: |
+  echo "=== START STEP ==="
+  ls -la
+  echo "=== SHOW SCRIPT HEAD ==="
+  head -n 30 ecowitt_to_grafana.py
+  echo "=== RUN SCRIPT ==="
+  python -u ecowitt_to_grafana.py
+  echo "=== DONE ==="
+
