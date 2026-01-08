@@ -3,12 +3,11 @@ name: ecowitt-to-grafana
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"   # cada 5 minutos (UTC)
+    - cron: "*/5 * * * *"
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,11 +29,11 @@ jobs:
           GRAFANA_RW_USERNAME: ${{ secrets.GRAFANA_RW_USERNAME }}
           GRAFANA_RW_PASSWORD: ${{ secrets.GRAFANA_RW_PASSWORD }}
         run: |
-  echo "=== START STEP ==="
-  ls -la
-  echo "=== SHOW SCRIPT HEAD ==="
-  head -n 30 ecowitt_to_grafana.py
-  echo "=== RUN SCRIPT ==="
-  python -u ecowitt_to_grafana.py
-  echo "=== DONE ==="
+          echo "=== START STEP ==="
+          ls -la
+          echo "=== SHOW SCRIPT HEAD ==="
+          head -n 30 ecowitt_to_grafana.py
+          echo "=== RUN SCRIPT ==="
+          python -u ecowitt_to_grafana.py
+          echo "=== DONE ==="
 
