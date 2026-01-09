@@ -1,12 +1,10 @@
 import os
 import time
 import requests
-from typing import Any, Dict, List, Optional
 
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.prometheus_remote_write import PrometheusRemoteWriteMetricsExporter
-
 
 ECOWITT_APP_KEY = os.environ["ECOWITT_APP_KEY"]
 ECOWITT_API_KEY = os.environ["ECOWITT_API_KEY"]
@@ -16,94 +14,91 @@ GRAFANA_RW_URL = os.environ["GRAFANA_RW_URL"]
 GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]
 GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]
 
+print("START ecowitt_to_grafana (no-indent version)", flush=True)
+print("Remote write username(first6):", (GRAFANA_RW_USERNAME[:6] if GRAFANA_RW_USERNAME else ""), flush=True)
 
-def fetch_ecowitt_realtime() -> Dict[str, Any]:
-    url = "https://api.ecowitt.net/api/v3/device/real_time"
-    params = {
-        "application_key": ECOWITT_APP_KEY,
-        "api_key": ECOWITT_API_KEY,
-        "mac": ECOWITT_MAC,
-        "call_back": "all",
-    }
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json()
+# --- Fetch Ecowitt ---
+url = "https://api.ecowitt.net/api/v3/device/real_time"
+params = {
+    "application_key": ECOWITT_APP_KEY,
+    "api_key": ECOWITT_API_KEY,
+    "mac": ECOWITT_MAC,
+    "call_back": "all",
+}
+r = requests.get(url, params=params, timeout=30)
+r.raise_for_status()
+payload = r.json()
 
+print("Ecowitt payload keys:", (list(payload.keys()) if isinstance(payload, dict) else type(payload)), flush=True)
+print("Ecowitt code/msg:", (payload.get("code") if isinstance(payload, dict) else None), (payload.get("msg") if isinstance(payload, dict) else None), flush=True)
 
-def _to_float(v: Any) -> Optional[float]:
+raw_data = payload.get("data") if isinstance(payload, dict) else None
+print("raw_data type:", type(raw_data), flush=True)
+
+# --- Normalize data to dict (best-effort) ---
+data = raw_data if isinstance(raw_data, dict) else (
+    {item.get("key"): item for item in raw_data if isinstance(item, dict) and isinstance(item.get("key"), str)}
+    if isinstance(raw_data, list) else {}
+)
+
+print("normalized keys sample:", (list(data.keys())[:30] if isinstance(data, dict) else None), flush=True)
+
+# --- Pick helper (no function, no indent) ---
+def _unwrap(v):
+    return (v.get("value") if isinstance(v, dict) and "value" in v else v)
+
+def _to_float(x):
     try:
-        return float(v)
+        return float(x)
     except Exception:
         return None
 
+temp_raw = _unwrap(next((data.get(k) for k in ("temp", "outdoor_temperature", "temp_out", "temperature", "outtemp") if isinstance(data, dict) and k in data), None))
+hum_raw  = _unwrap(next((data.get(k) for k in ("humidity", "outdoor_humidity", "humi_out", "humi") if isinstance(data, dict) and k in data), None))
+press_raw= _unwrap(next((data.get(k) for k in ("baromabs", "baromrel", "pressure", "press") if isinstance(data, dict) and k in data), None))
+wind_raw = _unwrap(next((data.get(k) for k in ("windspeed", "wind_speed", "wind", "windspd") if isinstance(data, dict) and k in data), None))
+gust_raw = _unwrap(next((data.get(k) for k in ("windgust", "gustspeed", "wind_gust", "gust") if isinstance(data, dict) and k in data), None))
+rain_raw = _unwrap(next((data.get(k) for k in ("rainrate", "rain_rate", "rainRate") if isinstance(data, dict) and k in data), None))
 
-def normalize_ecowitt_data(raw_data: Any) -> Dict[str, Any]:
-    if isinstance(raw_data, dict):
-        return raw_data
+temp = _to_float(temp_raw)
+hum = _to_float(hum_raw)
+press = _to_float(press_raw)
+wind = _to_float(wind_raw)
+gust = _to_float(gust_raw)
+rainrate = _to_float(rain_raw)
 
-    if isinstance(raw_data, list):
-        out: Dict[str, Any] = {}
-        for item in raw_data:
-            if not isinstance(item, dict):
-                continue
-            if "key" in item:
-                out[item["key"]] = item
-            elif len(item) == 1:
-                k, v = next(iter(item.items()))
-                out[k] = v
-        return out
+print("Values:", "temp=", temp, "hum=", hum, "press=", press, "wind=", wind, "gust=", gust, "rainrate=", rainrate, flush=True)
 
-    return {}
+# --- Export to Grafana Cloud remote_write ---
+exporter = PrometheusRemoteWriteMetricsExporter(
+    endpoint=GRAFANA_RW_URL,
+    basic_auth={"username": GRAFANA_RW_USERNAME, "password": GRAFANA_RW_PASSWORD},
+    headers={},
+)
 
+reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
+provider = MeterProvider(metric_readers=[reader])
+meter = provider.get_meter("ecowitt")
 
-def pick(data: Dict[str, Any], *names: str) -> Any:
-    for n in names:
-        if n in data:
-            v = data[n]
-            if isinstance(v, dict) and "value" in v:
-                return v["value"]
-            return v
-    return None
+g_temp_c = meter.create_gauge("ecowitt_temperature_c", unit="C")
+g_hum_pct = meter.create_gauge("ecowitt_humidity_pct", unit="%")
+g_press_hpa = meter.create_gauge("ecowitt_pressure_hpa", unit="hPa")
+g_wind_ms = meter.create_gauge("ecowitt_wind_speed_ms", unit="m/s")
+g_gust_ms = meter.create_gauge("ecowitt_wind_gust_ms", unit="m/s")
+g_rainrate_mm = meter.create_gauge("ecowitt_rain_rate_mm", unit="mm")
 
+labels = {"station_mac": ECOWITT_MAC}
 
-def main():
-    print("START ecowitt_to_grafana", flush=True)
+(temp is not None) and g_temp_c.set(temp, labels)
+(hum is not None) and g_hum_pct.set(hum, labels)
+(press is not None) and g_press_hpa.set(press, labels)
+(wind is not None) and g_wind_ms.set(wind, labels)
+(gust is not None) and g_gust_ms.set(gust, labels)
+(rainrate is not None) and g_rainrate_mm.set(rainrate, labels)
 
-    exporter = PrometheusRemoteWriteMetricsExporter(
-        endpoint=GRAFANA_RW_URL,
-        basic_auth={
-            "username": GRAFANA_RW_USERNAME,
-            "password": GRAFANA_RW_PASSWORD,
-        },
-    )
+provider.force_flush()
+print("force_flush() OK", flush=True)
 
-    reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
-    provider = MeterProvider(metric_readers=[reader])
-    meter = provider.get_meter("ecowitt")
-
-    g_temp = meter.create_gauge("ecowitt_temperature_c", unit="C")
-
-    payload = fetch_ecowitt_realtime()
-    raw_data = payload.get("data", [])
-    data = normalize_ecowitt_data(raw_data)
-
-    print("Payload code/msg:", payload.get("code"), payload.get("msg"), flush=True)
-    print("Normalized keys:", list(data.keys())[:20], flush=True)
-
-    temp = _to_float(pick(data, "temp", "outdoor_temperature", "temperature"))
-
-    print("Temp value:", temp, flush=True)
-
-    if temp is not None:
-        g_temp.set(temp, {"station_mac": ECOWITT_MAC})
-
-    provider.force_flush()
-    time.sleep(5)
-    provider.shutdown()
-
-    print("DONE", flush=True)
-
-
-if __name__ == "__main__":
-    main()
-
+time.sleep(10)
+provider.shutdown()
+print("DONE", flush=True)
