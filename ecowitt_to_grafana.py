@@ -38,10 +38,10 @@ def _to_float(v):
 
 def _normalize_ecowitt_data(data):
     """
-    Ecowitt a veces devuelve data como dict, y a veces como lista.
-    Si es lista, normalmente viene como:
+    Ecowitt a veces devuelve data como dict y a veces como lista.
+    Si es lista, suele ser:
       [{"key":"temp","value":"12.3","unit":"C"}, ...]
-    o similar. Lo convertimos a dict:
+    Lo convertimos a dict:
       {"temp": {"value":"12.3","unit":"C"}, ...}
     """
     if isinstance(data, dict):
@@ -53,12 +53,10 @@ def _normalize_ecowitt_data(data):
             if not isinstance(item, dict):
                 continue
 
-            # posibles campos
             k = item.get("key") or item.get("name") or item.get("field")
             if not k:
                 continue
 
-            # guardamos el item completo para poder leer item["value"]
             out[k] = item
         return out
 
@@ -66,24 +64,15 @@ def _normalize_ecowitt_data(data):
 
 
 def _pick(data: dict, *names):
-    """
-    data esperado como dict.
-    Valor puede venir como:
-      {"value":"12.3","unit":"C"} o {"value":12.3,...}
-    o directamente como "12.3".
-    """
     for name in names:
         if name not in data:
             continue
         v = data.get(name)
-
         if isinstance(v, dict):
-            # formatos comunes
             if "value" in v:
                 v = v.get("value")
             elif "val" in v:
                 v = v.get("val")
-
         if v is not None:
             return v
     return None
@@ -117,11 +106,10 @@ def main():
 
     print("Ecowitt payload keys:", (list(payload.keys()) if isinstance(payload, dict) else type(payload)), flush=True)
     print("Ecowitt raw data type:", type(raw_data), flush=True)
-    print("Ecowitt normalized data sample keys:", list(data.keys())[:25], flush=True)
+    print("Ecowitt normalized data sample keys:", list(data.keys())[:30], flush=True)
 
     labels = {"station_mac": ECOWITT_MAC}
 
-    # claves más típicas; si tu estación usa otras, lo veremos en "normalized data sample keys"
     temp = _to_float(_pick(data, "temp", "outdoor_temperature", "temp_out", "tempin"))
     hum = _to_float(_pick(data, "humidity", "outdoor_humidity", "humi_out", "humidityin"))
     press = _to_float(_pick(data, "baromabs", "baromrel", "pressure", "press"))
