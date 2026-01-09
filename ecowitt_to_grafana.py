@@ -122,6 +122,24 @@ def main():
         (raw_data[:5] if isinstance(raw_data, list) else None),
         flush=True,
     )
+    print("Ecowitt code/msg:", payload.get("code"), payload.get("msg"), flush=True)
+    print(
+        "raw_data type:",
+        type(raw_data),
+        "len:",
+        (len(raw_data) if isinstance(raw_data, list) else "n/a"),
+        flush=True,
+    )
+    print(
+        "raw_data first item:",
+        (raw_data[0] if isinstance(raw_data, list) and len(raw_data) > 0 else None),
+        flush=True,
+    )
+    print(
+        "raw_data first 5:",
+        (raw_data[:5] if isinstance(raw_data, list) else None),
+        flush=True,
+    )
 
 if isinstance(raw_data, list):
     print("Ecowitt raw data type: list, len=", len(raw_data), flush=True)
