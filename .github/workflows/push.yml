@@ -33,7 +33,10 @@ jobs:
           ls -la
           echo "=== SHOW SCRIPT HEAD ==="
           head -n 30 ecowitt_to_grafana.py
+          echo "=== SHOW SCRIPT LINES 70-95 ==="
+          nl -ba ecowitt_to_grafana.py | sed -n '70,95p'
           echo "=== RUN SCRIPT ==="
           python -u ecowitt_to_grafana.py
           echo "=== DONE ==="
 
+        
