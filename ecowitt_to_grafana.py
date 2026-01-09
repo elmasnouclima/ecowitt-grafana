@@ -176,6 +176,10 @@ def main() -> None:
     provider.shutdown()
     print("DONE", flush=True)
 
-
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print("FATAL ERROR:", repr(e), flush=True)
+        raise
+
