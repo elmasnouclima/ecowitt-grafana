@@ -1,12 +1,14 @@
 import os
 import time
 import requests
+from typing import Any, Dict, List, Tuple, Optional
 
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.prometheus_remote_write import PrometheusRemoteWriteMetricsExporter
 
 
+# -------- ENV (GitHub Secrets) --------
 ECOWITT_APP_KEY = os.environ["ECOWITT_APP_KEY"]
 ECOWITT_API_KEY = os.environ["ECOWITT_API_KEY"]
 ECOWITT_MAC = os.environ["ECOWITT_MAC"]
@@ -16,7 +18,10 @@ GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]
 GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]
 
 
-def fetch_ecowitt_realtime() -> dict:
+def fetch_ecowitt_realtime() -> Dict[str, Any]:
+    """
+    Ecowitt API v3: device real_time
+    """
     url = "https://api.ecowitt.net/api/v3/device/real_time"
     params = {
         "application_key": ECOWITT_APP_KEY,
@@ -29,71 +34,113 @@ def fetch_ecowitt_realtime() -> dict:
     return r.json()
 
 
-def _to_float(v):
+def _to_float(v: Any) -> Optional[float]:
     try:
+        if v is None:
+            return None
+        # strings tipo "12.3"
         return float(v)
     except Exception:
         return None
 
 
-def _normalize_ecowitt_data(data):
+def _unwrap_value(v: Any) -> Any:
     """
-    Ecowitt a veces devuelve data como dict y a veces como lista.
-    Si es lista, suele ser:
-      [{"key":"temp","value":"12.3","unit":"C"}, ...]
-    Lo convertimos a dict:
-      {"temp": {"value":"12.3","unit":"C"}, ...}
+    Ecowitt a veces devuelve:
+      {"value":"12.3","unit":"C"}
+    o:
+      {"val":"12.3"}
+    o:
+      "12.3"
     """
-    if isinstance(data, dict):
-        return data
+    if isinstance(v, dict):
+        if "value" in v:
+            return v.get("value")
+        if "val" in v:
+            return v.get("val")
+        if "data" in v and isinstance(v["data"], (str, int, float)):
+            return v["data"]
+    return v
 
-    if isinstance(data, list):
-        out = {}
-        for item in data:
+
+def _flatten_pairs_list(raw: List[Any]) -> Dict[str, Any]:
+    """
+    Si data viniera como lista de pares:
+      [["temp","12.3"], ["humidity","70"], ...]
+    """
+    out: Dict[str, Any] = {}
+    for item in raw:
+        if isinstance(item, (list, tuple)) and len(item) >= 2 and isinstance(item[0], str):
+            out[item[0]] = item[1]
+    return out
+
+
+def normalize_ecowitt_data(raw_data: Any) -> Dict[str, Any]:
+    """
+    Convierte raw_data a dict clave->valor, soportando varios formatos.
+    """
+    if isinstance(raw_data, dict):
+        return raw_data
+
+    if isinstance(raw_data, list):
+        # Caso A: lista de pares
+        out = _flatten_pairs_list(raw_data)
+        if out:
+            return out
+
+        # Caso B: lista de dicts con key/name/field
+        out2: Dict[str, Any] = {}
+        for item in raw_data:
             if not isinstance(item, dict):
                 continue
-
             k = item.get("key") or item.get("name") or item.get("field")
-            if not k:
-                continue
+            if isinstance(k, str) and k:
+                # guardamos el item entero (tendrá value/unit)
+                out2[k] = item
+        if out2:
+            return out2
 
-            out[k] = item
-        return out
+        # Caso C: lista de dicts con una sola clave cada uno: {"temp": {...}}
+        out3: Dict[str, Any] = {}
+        for item in raw_data:
+            if not isinstance(item, dict):
+                continue
+            if len(item) == 1:
+                (k, v) = next(iter(item.items()))
+                if isinstance(k, str):
+                    out3[k] = v
+        if out3:
+            return out3
+
+        # Si no reconocemos formato, devolvemos vacío
+        return {}
 
     return {}
 
 
-def _pick(data: dict, *names):
-    for name in names:
-        if name not in data:
-            continue
-        v = data.get(name)
-        if isinstance(v, dict):
-            if "value" in v:
-                v = v.get("value")
-            elif "val" in v:
-                v = v.get("val")
-        if v is not None:
-            return v
+def pick(data: Dict[str, Any], *names: str) -> Any:
+    for n in names:
+        if n in data:
+            return _unwrap_value(data[n])
     return None
 
 
-def main():
-    def main():
+def main() -> None:
     print("START ecowitt_to_grafana", flush=True)
     print(f"Remote write URL: {GRAFANA_RW_URL}", flush=True)
     print(f"Remote write username(first6): {GRAFANA_RW_USERNAME[:6]}", flush=True)
 
+    # --- exporter remote_write ---
     exporter = PrometheusRemoteWriteMetricsExporter(
         endpoint=GRAFANA_RW_URL,
         basic_auth={"username": GRAFANA_RW_USERNAME, "password": GRAFANA_RW_PASSWORD},
         headers={},
     )
-
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
     provider = MeterProvider(metric_readers=[reader])
     meter = provider.get_meter("ecowitt")
 
+    # --- gauges ---
     g_temp_c = meter.create_gauge("ecowitt_temperature_c", unit="C")
     g_hum_pct = meter.create_gauge("ecowitt_humidity_pct", unit="%")
     g_press_hpa = meter.create_gauge("ecowitt_pressure_hpa", unit="hPa")
@@ -101,84 +148,37 @@ def main():
     g_gust_ms = meter.create_gauge("ecowitt_wind_gust_ms", unit="m/s")
     g_rainrate_mm = meter.create_gauge("ecowitt_rain_rate_mm", unit="mm")
 
+    # --- fetch ecowitt ---
     payload = fetch_ecowitt_realtime()
-    raw_data = payload.get("data", {}) if isinstance(payload, dict) else {}
-    data = _normalize_ecowitt_data(raw_data)
+    code = payload.get("code")
+    msg = payload.get("msg")
+    raw_data = payload.get("data")
 
-    print("Ecowitt code/msg:", payload.get("code"), payload.get("msg"), flush=True)
-    print(
-        "raw_data type:",
-        type(raw_data),
-        "len:",
-        (len(raw_data) if isinstance(raw_data, list) else "n/a"),
-        flush=True,
-    )
-    print(
-        "raw_data first item:",
-        (raw_data[0] if isinstance(raw_data, list) and len(raw_data) > 0 else None),
-        flush=True,
-    )
-    print(
-        "raw_data first 5:",
-        (raw_data[:5] if isinstance(raw_data, list) else None),
-        flush=True,
-    )
+    print("Ecowitt payload keys:", list(payload.keys()) if isinstance(payload, dict) else type(payload), flush=True)
+    print("Ecowitt code/msg:", code, msg, flush=True)
+    print("raw_data type:", type(raw_data), flush=True)
+
+    if isinstance(raw_data, list):
+        print("raw_data len:", len(raw_data), flush=True)
+        print("raw_data first item:", (raw_data[0] if len(raw_data) > 0 else None), flush=True)
+        print("raw_data first 5:", raw_data[:5], flush=True)
+
+    data = normalize_ecowitt_data(raw_data)
+    print("normalized keys sample:", list(data.keys())[:30], flush=True)
 
     labels = {"station_mac": ECOWITT_MAC}
 
-    temp = _to_float(_pick(data, "temp", "outdoor_temperature", "temp_out", "tempin"))
-    hum = _to_float(_pick(data, "humidity", "outdoor_humidity", "humi_out", "humidityin"))
-    press = _to_float(_pick(data, "baromabs", "baromrel", "pressure", "press"))
-    wind = _to_float(_pick(data, "windspeed", "wind_speed", "wind"))
-    gust = _to_float(_pick(data, "windgust", "gustspeed", "wind_gust"))
-    rainrate = _to_float(_pick(data, "rainrate", "rain_rate", "rain_rate_piezo"))
+    # --- try multiple common key names ---
+    temp = _to_float(pick(data, "temp", "outdoor_temperature", "temp_out", "temperature", "outtemp"))
+    hum = _to_float(pick(data, "humidity", "outdoor_humidity", "humi_out", "humi", "outhumidity"))
+    press = _to_float(pick(data, "baromabs", "baromrel", "pressure", "press", "barometer"))
+    wind = _to_float(pick(data, "windspeed", "wind_speed", "wind", "windspd", "windSpeed"))
+    gust = _to_float(pick(data, "windgust", "gustspeed", "wind_gust", "gust", "windGust"))
+    rainrate = _to_float(pick(data, "rainrate", "rain_rate", "rain_rate_piezo", "rainRate"))
 
     print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
 
-    if temp is not None:
-        g_temp_c.set(temp, labels)
-    if hum is not None:
-        g_hum_pct.set(hum, labels)
-    if press is not None:
-        g_press_hpa.set(press, labels)
-    if wind is not None:
-        g_wind_ms.set(wind, labels)
-    if gust is not None:
-        g_gust_ms.set(gust, labels)
-    if rainrate is not None:
-        g_rainrate_mm.set(rainrate, labels)
-
-    provider.force_flush()
-    print("force_flush() OK", flush=True)
-
-    time.sleep(10)
-    provider.shutdown()
-    print("DONE", flush=True)
-
-if isinstance(raw_data, list):
-    print("Ecowitt raw data type: list, len=", len(raw_data), flush=True)
-    print("Ecowitt raw data sample (first 5):", raw_data[:5], flush=True)
-elif isinstance(raw_data, dict):
-    print("Ecowitt raw data type: dict, keys sample:", list(raw_data.keys())[:30], flush=True)
-else:
-    print("Ecowitt raw data type:", type(raw_data), flush=True)
-
-
-    print("Ecowitt payload keys:", (list(payload.keys()) if isinstance(payload, dict) else type(payload)), flush=True)
-    print("Ecowitt raw data type:", type(raw_data), flush=True)
-    print("Ecowitt normalized data sample keys:", list(data.keys())[:30], flush=True)
-
-    labels = {"station_mac": ECOWITT_MAC}
-
-    temp = _to_float(_pick(data, "temp", "outdoor_temperature", "temp_out", "tempin"))
-    hum = _to_float(_pick(data, "humidity", "outdoor_humidity", "humi_out", "humidityin"))
-    press = _to_float(_pick(data, "baromabs", "baromrel", "pressure", "press"))
-    wind = _to_float(_pick(data, "windspeed", "wind_speed", "wind"))
-    gust = _to_float(_pick(data, "windgust", "gustspeed", "wind_gust"))
-    rainrate = _to_float(_pick(data, "rainrate", "rain_rate", "rain_rate_piezo"))
-
-    print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
-
+    # --- set metrics (only if values exist) ---
     if temp is not None:
         g_temp_c.set(temp, labels)
     if hum is not None:
@@ -202,3 +202,4 @@ else:
 
 if __name__ == "__main__":
     main()
+
