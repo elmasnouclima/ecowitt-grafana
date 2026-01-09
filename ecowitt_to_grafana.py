@@ -79,6 +79,7 @@ def _pick(data: dict, *names):
 
 
 def main():
+    def main():
     print("START ecowitt_to_grafana", flush=True)
     print(f"Remote write URL: {GRAFANA_RW_URL}", flush=True)
     print(f"Remote write username(first6): {GRAFANA_RW_USERNAME[:6]}", flush=True)
@@ -122,24 +123,37 @@ def main():
         (raw_data[:5] if isinstance(raw_data, list) else None),
         flush=True,
     )
-    print("Ecowitt code/msg:", payload.get("code"), payload.get("msg"), flush=True)
-    print(
-        "raw_data type:",
-        type(raw_data),
-        "len:",
-        (len(raw_data) if isinstance(raw_data, list) else "n/a"),
-        flush=True,
-    )
-    print(
-        "raw_data first item:",
-        (raw_data[0] if isinstance(raw_data, list) and len(raw_data) > 0 else None),
-        flush=True,
-    )
-    print(
-        "raw_data first 5:",
-        (raw_data[:5] if isinstance(raw_data, list) else None),
-        flush=True,
-    )
+
+    labels = {"station_mac": ECOWITT_MAC}
+
+    temp = _to_float(_pick(data, "temp", "outdoor_temperature", "temp_out", "tempin"))
+    hum = _to_float(_pick(data, "humidity", "outdoor_humidity", "humi_out", "humidityin"))
+    press = _to_float(_pick(data, "baromabs", "baromrel", "pressure", "press"))
+    wind = _to_float(_pick(data, "windspeed", "wind_speed", "wind"))
+    gust = _to_float(_pick(data, "windgust", "gustspeed", "wind_gust"))
+    rainrate = _to_float(_pick(data, "rainrate", "rain_rate", "rain_rate_piezo"))
+
+    print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
+
+    if temp is not None:
+        g_temp_c.set(temp, labels)
+    if hum is not None:
+        g_hum_pct.set(hum, labels)
+    if press is not None:
+        g_press_hpa.set(press, labels)
+    if wind is not None:
+        g_wind_ms.set(wind, labels)
+    if gust is not None:
+        g_gust_ms.set(gust, labels)
+    if rainrate is not None:
+        g_rainrate_mm.set(rainrate, labels)
+
+    provider.force_flush()
+    print("force_flush() OK", flush=True)
+
+    time.sleep(10)
+    provider.shutdown()
+    print("DONE", flush=True)
 
 if isinstance(raw_data, list):
     print("Ecowitt raw data type: list, len=", len(raw_data), flush=True)
