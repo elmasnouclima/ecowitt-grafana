@@ -25,9 +25,29 @@ params = {
     "mac": ECOWITT_MAC,
     "call_back": "all",
 }
-r = requests.get(url, params=params, timeout=30)
-r.raise_for_status()
-payload = r.json()
+def fetch_ecowitt_realtime() -> dict:
+    url = "https://api.ecowitt.net/api/v3/device/real_time"
+    params = {
+        "application_key": ECOWITT_APP_KEY,
+        "api_key": ECOWITT_API_KEY,
+        "mac": ECOWITT_MAC,
+        "call_back": "all",
+    }
+
+    last_err = None
+    for attempt in range(1, 5):  # 4 intentos
+        try:
+            # timeout=(connect, read)
+            r = requests.get(url, params=params, timeout=(10, 90))
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last_err = e
+            print(f"Ecowitt request failed (attempt {attempt}/4): {repr(e)}", flush=True)
+            time.sleep(5 * attempt)  # 5s, 10s, 15s, 20s
+
+    # si falla todo: levantamos el error para ver el motivo en el log
+    raise last_err
 
 print("Ecowitt payload keys:", (list(payload.keys()) if isinstance(payload, dict) else type(payload)), flush=True)
 print("Ecowitt code/msg:", (payload.get("code") if isinstance(payload, dict) else None), (payload.get("msg") if isinstance(payload, dict) else None), flush=True)
