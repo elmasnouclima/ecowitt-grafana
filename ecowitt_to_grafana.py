@@ -103,8 +103,25 @@ def main():
     payload = fetch_ecowitt_realtime()
     raw_data = payload.get("data", {}) if isinstance(payload, dict) else {}
     data = _normalize_ecowitt_data(raw_data)
-    print("Ecowitt code:", payload.get("code"), flush=True)
-print("Ecowitt msg:", payload.get("msg"), flush=True)
+
+    print("Ecowitt code/msg:", payload.get("code"), payload.get("msg"), flush=True)
+    print(
+        "raw_data type:",
+        type(raw_data),
+        "len:",
+        (len(raw_data) if isinstance(raw_data, list) else "n/a"),
+        flush=True,
+    )
+    print(
+        "raw_data first item:",
+        (raw_data[0] if isinstance(raw_data, list) and len(raw_data) > 0 else None),
+        flush=True,
+    )
+    print(
+        "raw_data first 5:",
+        (raw_data[:5] if isinstance(raw_data, list) else None),
+        flush=True,
+    )
 
 if isinstance(raw_data, list):
     print("Ecowitt raw data type: list, len=", len(raw_data), flush=True)
