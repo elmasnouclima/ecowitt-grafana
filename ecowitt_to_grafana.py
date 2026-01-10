@@ -1,16 +1,17 @@
 import os
 import time
 import requests
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Iterable
 
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.prometheus_remote_write import PrometheusRemoteWriteMetricsExporter
 
 
+# --- ENV (GitHub Secrets) ---
 ECOWITT_APP_KEY = os.environ["ECOWITT_APP_KEY"]
 ECOWITT_API_KEY = os.environ["ECOWITT_API_KEY"]
-ECOWITT_MAC = os.environ["ECOWITT_MAC"]  # en tu caso funcionó con ":" y code/msg=0
+ECOWITT_MAC = os.environ["ECOWITT_MAC"]  # en tu caso funciona con ":" y code/msg=0
 
 GRAFANA_RW_URL = os.environ["GRAFANA_RW_URL"]
 GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]
@@ -18,6 +19,9 @@ GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]
 
 
 def fetch_ecowitt_realtime() -> Dict[str, Any]:
+    """
+    Devuelve JSON de Ecowitt o {} si falla tras reintentos (para que el workflow no se ponga rojo).
+    """
     url = "https://api.ecowitt.net/api/v3/device/real_time"
     params = {
         "application_key": ECOWITT_APP_KEY,
@@ -26,9 +30,9 @@ def fetch_ecowitt_realtime() -> Dict[str, Any]:
         "call_back": "all",
     }
 
-    for attempt in range(1, 5):
+    for attempt in range(1, 5):  # 4 intentos
         try:
-            r = requests.get(url, params=params, timeout=(10, 90))
+            r = requests.get(url, params=params, timeout=(10, 90))  # (connect, read)
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -40,6 +44,9 @@ def fetch_ecowitt_realtime() -> Dict[str, Any]:
 
 
 def _unwrap(v: Any) -> Any:
+    """
+    Ecowitt suele dar dicts tipo {'value': '12.3', 'unit': 'C'}.
+    """
     if isinstance(v, dict):
         if "value" in v:
             return v.get("value")
@@ -58,13 +65,16 @@ def _to_float(v: Any) -> Optional[float]:
 
 
 def normalize_ecowitt_data(raw_data: Any) -> Dict[str, Any]:
-    # en tu cuenta normalmente llega como dict
+    """
+    En tu caso raw_data ya viene como dict con bloques:
+      outdoor, wind, pressure, rainfall, ...
+    """
     if isinstance(raw_data, dict):
         return raw_data
 
-    # si llega como list, intentamos convertir a dict
-    out: Dict[str, Any] = {}
+    # fallback si alguna vez viniera como lista
     if isinstance(raw_data, list):
+        out: Dict[str, Any] = {}
         for item in raw_data:
             if isinstance(item, dict) and isinstance(item.get("key"), str):
                 out[item["key"]] = item
@@ -80,40 +90,43 @@ def normalize_ecowitt_data(raw_data: Any) -> Dict[str, Any]:
     return {}
 
 
-def pick_path(data: Any, *path: str) -> Any:
-    cur = data
-    for p in path:
-        if not isinstance(cur, dict) or p not in cur:
-            return None
-        cur = cur[p]
-    return _unwrap(cur)
-
-
-def first_found(*vals: Any) -> Any:
-    for v in vals:
-        if v is not None:
-            return v
-    return None
-
-
-def debug_block(data: Dict[str, Any], key: str) -> None:
-    v = data.get(key)
-    print(f"BLOCK {key} type:", type(v), flush=True)
-
+def debug_block(data: Dict[str, Any], block: str) -> None:
+    v = data.get(block)
+    print(f"BLOCK {block} type:", type(v), flush=True)
     if isinstance(v, dict):
         keys = list(v.keys())
-        print(f"BLOCK {key} keys(sample):", keys[:50], flush=True)
-        # muestra 2 ejemplos
-        for kk in keys[:2]:
-            print(f"BLOCK {key} example {kk} =", v.get(kk), flush=True)
-
-    elif isinstance(v, list):
-        print(f"BLOCK {key} len:", len(v), flush=True)
-        print(f"BLOCK {key} first item:", (v[0] if len(v) > 0 else None), flush=True)
-        print(f"BLOCK {key} first 3:", v[:3], flush=True)
-
+        print(f"SUBKEYS {block}:", keys[:80], flush=True)
+        # muestra 3 ejemplos
+        for kk in keys[:3]:
+            print(f"EXAMPLE {block}.{kk} =", v.get(kk), flush=True)
     else:
-        print(f"BLOCK {key} value:", v, flush=True)
+        print(f"BLOCK {block} value:", v, flush=True)
+
+
+def iter_numeric_fields(d: Dict[str, Any]) -> Iterable[tuple[str, float]]:
+    """
+    Recorre un dict y devuelve pares (key_lower, float_value) para valores numéricos,
+    incluso si vienen como {'value': '...'}.
+    """
+    for k, v in d.items():
+        vv = _unwrap(v)
+        f = _to_float(vv)
+        if f is not None:
+            yield (str(k).lower(), f)
+
+
+def pick_by_keywords(block: Any, keywords: Iterable[str]) -> Optional[float]:
+    """
+    Busca el primer campo numérico cuyo nombre contenga alguna keyword.
+    """
+    if not isinstance(block, dict):
+        return None
+
+    kws = [k.lower() for k in keywords]
+    for key_lower, f in iter_numeric_fields(block):
+        if any(kw in key_lower for kw in kws):
+            return f
+    return None
 
 
 def main() -> None:
@@ -125,6 +138,7 @@ def main() -> None:
         print("No payload from Ecowitt, exiting without exporting.", flush=True)
         return
 
+    print("Ecowitt payload keys:", list(payload.keys()), flush=True)
     print("Ecowitt code/msg:", payload.get("code"), payload.get("msg"), flush=True)
 
     raw_data = payload.get("data")
@@ -133,12 +147,34 @@ def main() -> None:
     data = normalize_ecowitt_data(raw_data)
     print("TOP keys:", list(data.keys())[:30], flush=True)
 
-    # DEBUG infalible de bloques
-    for k in ["outdoor", "wind", "pressure", "rainfall", "indoor", "solar_and_uvi", "battery"]:
-        if k in data:
-            debug_block(data, k)
+    # --- DEBUG de bloques (para que veas cómo se llaman realmente los campos) ---
+    for b in ["outdoor", "wind", "pressure", "rainfall"]:
+        if b in data:
+            debug_block(data, b)
 
-    # --- exporter remote_write ---
+    # --- Extraer valores de forma robusta por keywords ---
+    outdoor = data.get("outdoor")
+    wind_block = data.get("wind")
+    press_block = data.get("pressure")
+    rain_block = data.get("rainfall")
+
+    # temperatura / humedad exterior
+    temp = pick_by_keywords(outdoor, ["temp", "temperature", "out_temp", "outdoor_temp"])
+    hum = pick_by_keywords(outdoor, ["hum", "humidity", "humi"])
+
+    # presión (relativa o absoluta)
+    press = pick_by_keywords(press_block, ["rel", "relative", "baromrel", "abs", "absolute", "baromabs", "press", "pressure"])
+
+    # viento y racha
+    wind = pick_by_keywords(wind_block, ["wind_speed", "windspeed", "speed", "avg", "wind"])
+    gust = pick_by_keywords(wind_block, ["gust", "wind_gust", "windgust", "max"])
+
+    # lluvia instantánea (rain rate)
+    rainrate = pick_by_keywords(rain_block, ["rain_rate", "rainrate", "rate"])
+
+    print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
+
+    # --- Export a Grafana Cloud remote_write ---
     exporter = PrometheusRemoteWriteMetricsExporter(
         endpoint=GRAFANA_RW_URL,
         basic_auth={"username": GRAFANA_RW_USERNAME, "password": GRAFANA_RW_PASSWORD},
@@ -156,36 +192,6 @@ def main() -> None:
     g_rainrate_mm = meter.create_gauge("ecowitt_rain_rate_mm", unit="mm")
 
     labels = {"station_mac": ECOWITT_MAC}
-
-    # Intento inicial (se ajustará con lo que veamos en el DEBUG)
-    temp = _to_float(first_found(
-        pick_path(data, "outdoor", "temperature"),
-        pick_path(data, "outdoor", "temp"),
-    ))
-    hum = _to_float(first_found(
-        pick_path(data, "outdoor", "humidity"),
-        pick_path(data, "outdoor", "humi"),
-    ))
-    press = _to_float(first_found(
-        pick_path(data, "pressure", "relative"),
-        pick_path(data, "pressure", "abs"),
-        pick_path(data, "pressure", "absolute"),
-    ))
-    wind = _to_float(first_found(
-        pick_path(data, "wind", "wind_speed"),
-        pick_path(data, "wind", "speed"),
-    ))
-    gust = _to_float(first_found(
-        pick_path(data, "wind", "wind_gust"),
-        pick_path(data, "wind", "gust"),
-    ))
-    rainrate = _to_float(first_found(
-        pick_path(data, "rainfall", "rain_rate"),
-        pick_path(data, "rainfall", "rainrate"),
-        pick_path(data, "rainfall", "rate"),
-    ))
-
-    print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
 
     if temp is not None:
         g_temp_c.set(temp, labels)
