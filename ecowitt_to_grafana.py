@@ -152,6 +152,14 @@ def main() -> None:
 
     data = normalize_ecowitt_data(raw_data)
     print("normalized keys sample:", list(data.keys())[:30], flush=True)
+    # --- DEBUG: ver subclaves dentro de cada bloque ---
+     for k in ["outdoor", "wind", "pressure", "rainfall"]:
+         v = data.get(k)
+         if isinstance(v, dict):
+            print(f"SUBKEYS {k}:", list(v.keys())[:50], flush=True)
+            # muestra un ejemplo de 2 campos para ver el formato (value/unit)
+            for kk in list(v.keys())[:2]:
+                print(f"EXAMPLE {k}.{kk} =", v.get(kk), flush=True)
 
     # --- preparar exporter remote_write ---
     exporter = PrometheusRemoteWriteMetricsExporter(
