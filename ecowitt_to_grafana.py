@@ -11,11 +11,11 @@ from opentelemetry.exporter.prometheus_remote_write import PrometheusRemoteWrite
 # --- ENV (GitHub Secrets) ---
 ECOWITT_APP_KEY = os.environ["ECOWITT_APP_KEY"]
 ECOWITT_API_KEY = os.environ["ECOWITT_API_KEY"]
-ECOWITT_MAC = os.environ["ECOWITT_MAC"]
+ECOWITT_MAC = os.environ["ECOWITT_MAC"]  # puede ir con ":" si así te funciona
 
-GRAFANA_RW_URL = os.environ["GRAFANA_RW_URL"]            # https://.../api/prom/push
-GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]  # instance id / username
-GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]  # access policy token
+GRAFANA_RW_URL = os.environ["GRAFANA_RW_URL"]
+GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]
+GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]
 
 
 def fetch_ecowitt_realtime() -> Dict[str, Any]:
@@ -32,8 +32,7 @@ def fetch_ecowitt_realtime() -> Dict[str, Any]:
 
     for attempt in range(1, 5):  # 4 intentos
         try:
-            # timeout=(connect, read)
-            r = requests.get(url, params=params, timeout=(10, 90))
+            r = requests.get(url, params=params, timeout=(10, 90))  # (connect, read)
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -55,7 +54,7 @@ def _to_float(v: Any) -> Optional[float]:
 
 def _unwrap(v: Any) -> Any:
     """
-    Ecowitt a veces da dicts con {'value': '12.3', 'unit': 'C'}.
+    Ecowitt suele dar dicts: {'value': '12.3', 'unit': 'C'}
     """
     if isinstance(v, dict):
         if "value" in v:
@@ -67,73 +66,55 @@ def _unwrap(v: Any) -> Any:
 
 def normalize_ecowitt_data(raw_data: Any) -> Dict[str, Any]:
     """
-    Convierte raw_data a dict key->value soportando formatos comunes.
-    - dict -> se devuelve tal cual
-    - list de dicts con 'key' -> {'temp': {...}, ...}
-    - list de dicts con una sola clave -> {'temp': {...}, ...}
+    Para tu caso ya sabemos que las claves son bloques:
+    outdoor, indoor, wind, pressure, rainfall, etc.
+    Normalmente raw_data llega ya como dict.
+    Si llega como lista, intentamos convertirla.
     """
     if isinstance(raw_data, dict):
         return raw_data
 
     if isinstance(raw_data, list):
         out: Dict[str, Any] = {}
-
-        # A) lista de dicts con 'key'
+        # lista de dicts con key
         for item in raw_data:
             if isinstance(item, dict) and isinstance(item.get("key"), str):
                 out[item["key"]] = item
         if out:
             return out
-
-        # B) lista de dicts con 1 clave
-        out2: Dict[str, Any] = {}
+        # lista de dicts con 1 clave
         for item in raw_data:
             if isinstance(item, dict) and len(item) == 1:
                 k, v = next(iter(item.items()))
                 if isinstance(k, str):
-                    out2[k] = v
-        if out2:
-            return out2
+                    out[k] = v
+        return out
 
     return {}
 
 
-def pick(data: Dict[str, Any], *names: str) -> Any:
-    for n in names:
-        if n in data:
-            return _unwrap(data[n])
+def pick_path(data: Dict[str, Any], *path: str) -> Any:
+    """
+    Lee valores anidados, ej:
+      pick_path(data, "outdoor", "temperature")
+    """
+    cur: Any = data
+    for p in path:
+        if not isinstance(cur, dict) or p not in cur:
+            return None
+        cur = cur[p]
+    return _unwrap(cur)
+
+
+def first_found(*vals: Any) -> Any:
+    for v in vals:
+        if v is not None:
+            return v
     return None
 
 
 def main() -> None:
     print("START ecowitt_to_grafana", flush=True)
-        # --- DIAGNÓSTICO: listar dispositivos para obtener MAC/IMEI correcto ---
-    list_url = "https://api.ecowitt.net/api/v3/device/list"
-    list_params = {
-        "application_key": ECOWITT_APP_KEY,
-        "api_key": ECOWITT_API_KEY,
-        "limit": 20,
-        "page": 1,
-    }
-
-    try:
-        rr = requests.get(list_url, params=list_params, timeout=(10, 60))
-        rr.raise_for_status()
-        dev = rr.json()
-        print("DEVICE LIST code/msg:", dev.get("code"), dev.get("msg"), flush=True)
-        data_list = dev.get("data") or []
-        print("DEVICE LIST count:", len(data_list) if isinstance(data_list, list) else type(data_list), flush=True)
-
-        if isinstance(data_list, list):
-            for i, d in enumerate(data_list[:10]):
-                mac = d.get("mac")
-                imei = d.get("imei")
-                name = d.get("name") or d.get("device_name") or d.get("model")
-                print(f"DEV[{i}] name={name} mac={mac} imei={imei}", flush=True)
-
-    except Exception as e:
-        print("DEVICE LIST ERROR:", repr(e), flush=True)
-
     print(f"Remote write username(first6): {GRAFANA_RW_USERNAME[:6]}", flush=True)
 
     payload = fetch_ecowitt_realtime()
@@ -141,27 +122,20 @@ def main() -> None:
         print("No payload from Ecowitt, exiting without exporting.", flush=True)
         return
 
-    print("Ecowitt payload keys:", list(payload.keys()), flush=True)
     print("Ecowitt code/msg:", payload.get("code"), payload.get("msg"), flush=True)
 
     raw_data = payload.get("data")
-    print("raw_data type:", type(raw_data), flush=True)
-    if isinstance(raw_data, list):
-        print("raw_data len:", len(raw_data), flush=True)
-        print("raw_data first item:", (raw_data[0] if len(raw_data) > 0 else None), flush=True)
-
     data = normalize_ecowitt_data(raw_data)
-    print("normalized keys sample:", list(data.keys())[:30], flush=True)
-    # --- DEBUG: ver subclaves dentro de cada bloque ---
-     for k in ["outdoor", "wind", "pressure", "rainfall"]:
-         v = data.get(k)
-         if isinstance(v, dict):
-            print(f"SUBKEYS {k}:", list(v.keys())[:50], flush=True)
-            # muestra un ejemplo de 2 campos para ver el formato (value/unit)
-            for kk in list(v.keys())[:2]:
-                print(f"EXAMPLE {k}.{kk} =", v.get(kk), flush=True)
 
-    # --- preparar exporter remote_write ---
+    print("normalized keys sample:", list(data.keys())[:20], flush=True)
+
+    # --- DEBUG corto: muestra subclaves de los bloques principales (para ajustar nombres) ---
+    for k in ["outdoor", "wind", "pressure", "rainfall"]:
+        v = data.get(k)
+        if isinstance(v, dict):
+            print(f"SUBKEYS {k}:", list(v.keys())[:50], flush=True)
+
+    # --- Exporter remote_write ---
     exporter = PrometheusRemoteWriteMetricsExporter(
         endpoint=GRAFANA_RW_URL,
         basic_auth={"username": GRAFANA_RW_USERNAME, "password": GRAFANA_RW_PASSWORD},
@@ -181,12 +155,52 @@ def main() -> None:
 
     labels = {"station_mac": ECOWITT_MAC}
 
-    temp = _to_float(pick(data, "temp", "outdoor_temperature", "temp_out", "temperature", "outtemp"))
-    hum = _to_float(pick(data, "humidity", "outdoor_humidity", "humi_out", "humi", "outhumidity"))
-    press = _to_float(pick(data, "baromabs", "baromrel", "pressure", "press", "barometer"))
-    wind = _to_float(pick(data, "windspeed", "wind_speed", "wind", "windspd", "windSpeed"))
-    gust = _to_float(pick(data, "windgust", "gustspeed", "wind_gust", "gust", "windGust"))
-    rainrate = _to_float(pick(data, "rainrate", "rain_rate", "rain_rate_piezo", "rainRate"))
+    # --- Lectura anidada (probamos varios nombres típicos por bloque) ---
+    temp = _to_float(
+        first_found(
+            pick_path(data, "outdoor", "temperature"),
+            pick_path(data, "outdoor", "temp"),
+            pick_path(data, "outdoor", "temp_c"),
+        )
+    )
+    hum = _to_float(
+        first_found(
+            pick_path(data, "outdoor", "humidity"),
+            pick_path(data, "outdoor", "humi"),
+        )
+    )
+
+    press = _to_float(
+        first_found(
+            pick_path(data, "pressure", "relative"),
+            pick_path(data, "pressure", "rel"),
+            pick_path(data, "pressure", "absolute"),
+            pick_path(data, "pressure", "abs"),
+        )
+    )
+
+    wind = _to_float(
+        first_found(
+            pick_path(data, "wind", "wind_speed"),
+            pick_path(data, "wind", "speed"),
+            pick_path(data, "wind", "windspeed"),
+        )
+    )
+    gust = _to_float(
+        first_found(
+            pick_path(data, "wind", "wind_gust"),
+            pick_path(data, "wind", "gust"),
+            pick_path(data, "wind", "windgust"),
+        )
+    )
+
+    rainrate = _to_float(
+        first_found(
+            pick_path(data, "rainfall", "rain_rate"),
+            pick_path(data, "rainfall", "rainrate"),
+            pick_path(data, "rainfall", "rate"),
+        )
+    )
 
     print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
 
@@ -211,10 +225,6 @@ def main() -> None:
     provider.shutdown()
     print("DONE", flush=True)
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print("FATAL ERROR:", repr(e), flush=True)
-        raise
 
+if __name__ == "__main__":
+    main()
