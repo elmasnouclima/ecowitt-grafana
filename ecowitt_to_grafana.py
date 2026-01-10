@@ -107,6 +107,33 @@ def pick(data: Dict[str, Any], *names: str) -> Any:
 
 def main() -> None:
     print("START ecowitt_to_grafana", flush=True)
+        # --- DIAGNÓSTICO: listar dispositivos para obtener MAC/IMEI correcto ---
+    list_url = "https://api.ecowitt.net/api/v3/device/list"
+    list_params = {
+        "application_key": ECOWITT_APP_KEY,
+        "api_key": ECOWITT_API_KEY,
+        "limit": 20,
+        "page": 1,
+    }
+
+    try:
+        rr = requests.get(list_url, params=list_params, timeout=(10, 60))
+        rr.raise_for_status()
+        dev = rr.json()
+        print("DEVICE LIST code/msg:", dev.get("code"), dev.get("msg"), flush=True)
+        data_list = dev.get("data") or []
+        print("DEVICE LIST count:", len(data_list) if isinstance(data_list, list) else type(data_list), flush=True)
+
+        if isinstance(data_list, list):
+            for i, d in enumerate(data_list[:10]):
+                mac = d.get("mac")
+                imei = d.get("imei")
+                name = d.get("name") or d.get("device_name") or d.get("model")
+                print(f"DEV[{i}] name={name} mac={mac} imei={imei}", flush=True)
+
+    except Exception as e:
+        print("DEVICE LIST ERROR:", repr(e), flush=True)
+
     print(f"Remote write username(first6): {GRAFANA_RW_USERNAME[:6]}", flush=True)
 
     payload = fetch_ecowitt_realtime()
