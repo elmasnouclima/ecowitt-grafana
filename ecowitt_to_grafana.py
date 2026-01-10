@@ -8,10 +8,9 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.prometheus_remote_write import PrometheusRemoteWriteMetricsExporter
 
 
-# --- ENV (GitHub Secrets) ---
 ECOWITT_APP_KEY = os.environ["ECOWITT_APP_KEY"]
 ECOWITT_API_KEY = os.environ["ECOWITT_API_KEY"]
-ECOWITT_MAC = os.environ["ECOWITT_MAC"]  # puede ir con ":" si así te funciona
+ECOWITT_MAC = os.environ["ECOWITT_MAC"]  # en tu caso funcionó con ":" y code/msg=0
 
 GRAFANA_RW_URL = os.environ["GRAFANA_RW_URL"]
 GRAFANA_RW_USERNAME = os.environ["GRAFANA_RW_USERNAME"]
@@ -19,9 +18,6 @@ GRAFANA_RW_PASSWORD = os.environ["GRAFANA_RW_PASSWORD"]
 
 
 def fetch_ecowitt_realtime() -> Dict[str, Any]:
-    """
-    Devuelve JSON de Ecowitt o {} si falla tras reintentos (para que el workflow no se ponga rojo).
-    """
     url = "https://api.ecowitt.net/api/v3/device/real_time"
     params = {
         "application_key": ECOWITT_APP_KEY,
@@ -30,9 +26,9 @@ def fetch_ecowitt_realtime() -> Dict[str, Any]:
         "call_back": "all",
     }
 
-    for attempt in range(1, 5):  # 4 intentos
+    for attempt in range(1, 5):
         try:
-            r = requests.get(url, params=params, timeout=(10, 90))  # (connect, read)
+            r = requests.get(url, params=params, timeout=(10, 90))
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -41,6 +37,15 @@ def fetch_ecowitt_realtime() -> Dict[str, Any]:
 
     print("Ecowitt unreachable after retries, skipping this run.", flush=True)
     return {}
+
+
+def _unwrap(v: Any) -> Any:
+    if isinstance(v, dict):
+        if "value" in v:
+            return v.get("value")
+        if "val" in v:
+            return v.get("val")
+    return v
 
 
 def _to_float(v: Any) -> Optional[float]:
@@ -52,37 +57,19 @@ def _to_float(v: Any) -> Optional[float]:
         return None
 
 
-def _unwrap(v: Any) -> Any:
-    """
-    Ecowitt suele dar dicts: {'value': '12.3', 'unit': 'C'}
-    """
-    if isinstance(v, dict):
-        if "value" in v:
-            return v.get("value")
-        if "val" in v:
-            return v.get("val")
-    return v
-
-
 def normalize_ecowitt_data(raw_data: Any) -> Dict[str, Any]:
-    """
-    Para tu caso ya sabemos que las claves son bloques:
-    outdoor, indoor, wind, pressure, rainfall, etc.
-    Normalmente raw_data llega ya como dict.
-    Si llega como lista, intentamos convertirla.
-    """
+    # en tu cuenta normalmente llega como dict
     if isinstance(raw_data, dict):
         return raw_data
 
+    # si llega como list, intentamos convertir a dict
+    out: Dict[str, Any] = {}
     if isinstance(raw_data, list):
-        out: Dict[str, Any] = {}
-        # lista de dicts con key
         for item in raw_data:
             if isinstance(item, dict) and isinstance(item.get("key"), str):
                 out[item["key"]] = item
         if out:
             return out
-        # lista de dicts con 1 clave
         for item in raw_data:
             if isinstance(item, dict) and len(item) == 1:
                 k, v = next(iter(item.items()))
@@ -93,12 +80,8 @@ def normalize_ecowitt_data(raw_data: Any) -> Dict[str, Any]:
     return {}
 
 
-def pick_path(data: Dict[str, Any], *path: str) -> Any:
-    """
-    Lee valores anidados, ej:
-      pick_path(data, "outdoor", "temperature")
-    """
-    cur: Any = data
+def pick_path(data: Any, *path: str) -> Any:
+    cur = data
     for p in path:
         if not isinstance(cur, dict) or p not in cur:
             return None
@@ -113,6 +96,26 @@ def first_found(*vals: Any) -> Any:
     return None
 
 
+def debug_block(data: Dict[str, Any], key: str) -> None:
+    v = data.get(key)
+    print(f"BLOCK {key} type:", type(v), flush=True)
+
+    if isinstance(v, dict):
+        keys = list(v.keys())
+        print(f"BLOCK {key} keys(sample):", keys[:50], flush=True)
+        # muestra 2 ejemplos
+        for kk in keys[:2]:
+            print(f"BLOCK {key} example {kk} =", v.get(kk), flush=True)
+
+    elif isinstance(v, list):
+        print(f"BLOCK {key} len:", len(v), flush=True)
+        print(f"BLOCK {key} first item:", (v[0] if len(v) > 0 else None), flush=True)
+        print(f"BLOCK {key} first 3:", v[:3], flush=True)
+
+    else:
+        print(f"BLOCK {key} value:", v, flush=True)
+
+
 def main() -> None:
     print("START ecowitt_to_grafana", flush=True)
     print(f"Remote write username(first6): {GRAFANA_RW_USERNAME[:6]}", flush=True)
@@ -125,17 +128,17 @@ def main() -> None:
     print("Ecowitt code/msg:", payload.get("code"), payload.get("msg"), flush=True)
 
     raw_data = payload.get("data")
+    print("raw_data type:", type(raw_data), flush=True)
+
     data = normalize_ecowitt_data(raw_data)
+    print("TOP keys:", list(data.keys())[:30], flush=True)
 
-    print("normalized keys sample:", list(data.keys())[:20], flush=True)
+    # DEBUG infalible de bloques
+    for k in ["outdoor", "wind", "pressure", "rainfall", "indoor", "solar_and_uvi", "battery"]:
+        if k in data:
+            debug_block(data, k)
 
-    # --- DEBUG corto: muestra subclaves de los bloques principales (para ajustar nombres) ---
-    for k in ["outdoor", "wind", "pressure", "rainfall"]:
-        v = data.get(k)
-        if isinstance(v, dict):
-            print(f"SUBKEYS {k}:", list(v.keys())[:50], flush=True)
-
-    # --- Exporter remote_write ---
+    # --- exporter remote_write ---
     exporter = PrometheusRemoteWriteMetricsExporter(
         endpoint=GRAFANA_RW_URL,
         basic_auth={"username": GRAFANA_RW_USERNAME, "password": GRAFANA_RW_PASSWORD},
@@ -145,7 +148,6 @@ def main() -> None:
     provider = MeterProvider(metric_readers=[reader])
     meter = provider.get_meter("ecowitt")
 
-    # --- gauges ---
     g_temp_c = meter.create_gauge("ecowitt_temperature_c", unit="C")
     g_hum_pct = meter.create_gauge("ecowitt_humidity_pct", unit="%")
     g_press_hpa = meter.create_gauge("ecowitt_pressure_hpa", unit="hPa")
@@ -155,56 +157,36 @@ def main() -> None:
 
     labels = {"station_mac": ECOWITT_MAC}
 
-    # --- Lectura anidada (probamos varios nombres típicos por bloque) ---
-    temp = _to_float(
-        first_found(
-            pick_path(data, "outdoor", "temperature"),
-            pick_path(data, "outdoor", "temp"),
-            pick_path(data, "outdoor", "temp_c"),
-        )
-    )
-    hum = _to_float(
-        first_found(
-            pick_path(data, "outdoor", "humidity"),
-            pick_path(data, "outdoor", "humi"),
-        )
-    )
-
-    press = _to_float(
-        first_found(
-            pick_path(data, "pressure", "relative"),
-            pick_path(data, "pressure", "rel"),
-            pick_path(data, "pressure", "absolute"),
-            pick_path(data, "pressure", "abs"),
-        )
-    )
-
-    wind = _to_float(
-        first_found(
-            pick_path(data, "wind", "wind_speed"),
-            pick_path(data, "wind", "speed"),
-            pick_path(data, "wind", "windspeed"),
-        )
-    )
-    gust = _to_float(
-        first_found(
-            pick_path(data, "wind", "wind_gust"),
-            pick_path(data, "wind", "gust"),
-            pick_path(data, "wind", "windgust"),
-        )
-    )
-
-    rainrate = _to_float(
-        first_found(
-            pick_path(data, "rainfall", "rain_rate"),
-            pick_path(data, "rainfall", "rainrate"),
-            pick_path(data, "rainfall", "rate"),
-        )
-    )
+    # Intento inicial (se ajustará con lo que veamos en el DEBUG)
+    temp = _to_float(first_found(
+        pick_path(data, "outdoor", "temperature"),
+        pick_path(data, "outdoor", "temp"),
+    ))
+    hum = _to_float(first_found(
+        pick_path(data, "outdoor", "humidity"),
+        pick_path(data, "outdoor", "humi"),
+    ))
+    press = _to_float(first_found(
+        pick_path(data, "pressure", "relative"),
+        pick_path(data, "pressure", "abs"),
+        pick_path(data, "pressure", "absolute"),
+    ))
+    wind = _to_float(first_found(
+        pick_path(data, "wind", "wind_speed"),
+        pick_path(data, "wind", "speed"),
+    ))
+    gust = _to_float(first_found(
+        pick_path(data, "wind", "wind_gust"),
+        pick_path(data, "wind", "gust"),
+    ))
+    rainrate = _to_float(first_found(
+        pick_path(data, "rainfall", "rain_rate"),
+        pick_path(data, "rainfall", "rainrate"),
+        pick_path(data, "rainfall", "rate"),
+    ))
 
     print(f"Values: temp={temp} hum={hum} press={press} wind={wind} gust={gust} rainrate={rainrate}", flush=True)
 
-    # --- set metrics si hay valores ---
     if temp is not None:
         g_temp_c.set(temp, labels)
     if hum is not None:
