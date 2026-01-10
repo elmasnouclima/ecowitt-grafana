@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Fetch Ecowitt data and push to Grafana
+      - name: Fetch DEBUG
         env:
           ECOWITT_APP_KEY: ${{ secrets.ECOWITT_APP_KEY }}
           ECOWITT_API_KEY: ${{ secrets.ECOWITT_API_KEY }}
@@ -28,15 +28,13 @@ jobs:
           GRAFANA_RW_URL: ${{ secrets.GRAFANA_RW_URL }}
           GRAFANA_RW_USERNAME: ${{ secrets.GRAFANA_RW_USERNAME }}
           GRAFANA_RW_PASSWORD: ${{ secrets.GRAFANA_RW_PASSWORD }}
-        run: |
-          echo "=== START STEP ==="
-          ls -la
-          echo "=== SHOW SCRIPT HEAD ==="
-          head -n 30 ecowitt_to_grafana.py
-          echo "=== SHOW SCRIPT LINES 70-95 ==="
-          nl -ba ecowitt_to_grafana.py | sed -n '70,95p'
-          echo "=== RUN SCRIPT ==="
-          python -u ecowitt_to_grafana.py
-          echo "=== DONE ==="
+       run:
+          echo "=== RUN SCRIPT (show errors) ==="
+          set +e
+          python -u ecowitt_to_grafana.py 2>&1
+          CODE=$?
+          echo "=== PYTHON EXIT CODE: $CODE ==="
+          exit $CODE
+
 
         
