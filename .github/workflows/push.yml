@@ -28,13 +28,18 @@ jobs:
           GRAFANA_RW_URL: ${{ secrets.GRAFANA_RW_URL }}
           GRAFANA_RW_USERNAME: ${{ secrets.GRAFANA_RW_USERNAME }}
           GRAFANA_RW_PASSWORD: ${{ secrets.GRAFANA_RW_PASSWORD }}
-       run:
+        run: |
           echo "=== RUN SCRIPT (show errors) ==="
+          echo "=== CHECK IF SCRIPT HAS SUBKEYS/EXAMPLE ==="
+          grep -n "SUBKEYS" ecowitt_to_grafana.py || echo "NO SUBKEYS IN FILE"
+          grep -n "EXAMPLE" ecowitt_to_grafana.py || echo "NO EXAMPLE IN FILE"
+          echo "=== SHOW SCRIPT HEAD ==="
+          head -n 40 ecowitt_to_grafana.py
+          echo "=== SHOW SCRIPT TAIL ==="
+          tail -n 60 ecowitt_to_grafana.py
+
           set +e
           python -u ecowitt_to_grafana.py 2>&1
           CODE=$?
           echo "=== PYTHON EXIT CODE: $CODE ==="
           exit $CODE
-
-
-        
