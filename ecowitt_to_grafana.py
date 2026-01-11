@@ -1,3 +1,4 @@
+print("### VERSION SUBKEYS TEST 2026-01-11 ###", flush=True)
 import os
 import time
 import requests
